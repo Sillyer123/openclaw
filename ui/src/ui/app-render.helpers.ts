@@ -1,4 +1,4 @@
-import { html } from "lit";
+import { html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { t } from "../i18n/index.ts";
 import { refreshChat } from "./app-chat.ts";
@@ -9,7 +9,7 @@ import { ChatState, loadChatHistory } from "./controllers/chat.ts";
 import { icons } from "./icons.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import type { ThemeTransitionContext } from "./theme-transition.ts";
-import type { ThemeMode } from "./theme.ts";
+import type { ThemeMode, ThemeName } from "./theme.ts";
 import type { SessionsListResult } from "./types.ts";
 
 type SessionDefaultsSnapshot = {
@@ -49,10 +49,12 @@ function resetChatStateForSessionSwitch(state: AppViewState, sessionKey: string)
 
 export function renderTab(state: AppViewState, tab: Tab) {
   const href = pathForTab(tab, state.basePath);
+  const isActive = state.tab === tab;
+  const collapsed = state.settings.navCollapsed;
   return html`
     <a
       href=${href}
-      class="nav-item ${state.tab === tab ? "active" : ""}"
+      class="nav-item ${isActive ? "nav-item--active" : ""}"
       @click=${(event: MouseEvent) => {
         if (
           event.defaultPrevented ||
@@ -77,23 +79,64 @@ export function renderTab(state: AppViewState, tab: Tab) {
       title=${titleForTab(tab)}
     >
       <span class="nav-item__icon" aria-hidden="true">${icons[iconForTab(tab)]}</span>
-      <span class="nav-item__text">${titleForTab(tab)}</span>
+      ${!collapsed ? html`<span class="nav-item__text">${titleForTab(tab)}</span>` : nothing}
     </a>
   `;
 }
 
-export function renderChatControls(state: AppViewState) {
+export function renderChatSessionSelect(state: AppViewState) {
   const mainSessionKey = resolveMainSessionKey(state.hello, state.sessionsResult);
   const sessionOptions = resolveSessionOptions(
     state.sessionKey,
     state.sessionsResult,
     mainSessionKey,
   );
+  return html`
+    <label class="field chat-controls__session">
+      <select
+        .value=${state.sessionKey}
+        ?disabled=${!state.connected}
+        @change=${(e: Event) => {
+          const next = (e.target as HTMLSelectElement).value;
+          state.sessionKey = next;
+          state.chatMessage = "";
+          state.chatStream = null;
+          (state as unknown as OpenClawApp).chatStreamStartedAt = null;
+          state.chatRunId = null;
+          (state as unknown as OpenClawApp).resetToolStream();
+          (state as unknown as OpenClawApp).resetChatScroll();
+          state.applySettings({
+            ...state.settings,
+            sessionKey: next,
+            lastActiveSessionKey: next,
+          });
+          void state.loadAssistantIdentity();
+          syncUrlWithSessionKey(
+            state as unknown as Parameters<typeof syncUrlWithSessionKey>[0],
+            next,
+            true,
+          );
+          void loadChatHistory(state as unknown as ChatState);
+        }}
+      >
+        ${repeat(
+          sessionOptions,
+          (entry) => entry.key,
+          (entry) =>
+            html`<option value=${entry.key} title=${entry.key}>
+              ${entry.displayName ?? entry.key}
+            </option>`,
+        )}
+      </select>
+    </label>
+  `;
+}
+
+export function renderChatControls(state: AppViewState) {
   const disableThinkingToggle = state.onboarding;
   const disableFocusToggle = state.onboarding;
   const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
   const focusActive = state.onboarding ? true : state.settings.chatFocusMode;
-  // Refresh icon
   const refreshIcon = html`
     <svg
       width="18"
@@ -129,43 +172,6 @@ export function renderChatControls(state: AppViewState) {
   `;
   return html`
     <div class="chat-controls">
-      <label class="field chat-controls__session">
-        <select
-          .value=${state.sessionKey}
-          ?disabled=${!state.connected}
-          @change=${(e: Event) => {
-            const next = (e.target as HTMLSelectElement).value;
-            state.sessionKey = next;
-            state.chatMessage = "";
-            state.chatStream = null;
-            (state as unknown as OpenClawApp).chatStreamStartedAt = null;
-            state.chatRunId = null;
-            (state as unknown as OpenClawApp).resetToolStream();
-            (state as unknown as OpenClawApp).resetChatScroll();
-            state.applySettings({
-              ...state.settings,
-              sessionKey: next,
-              lastActiveSessionKey: next,
-            });
-            void state.loadAssistantIdentity();
-            syncUrlWithSessionKey(
-              state as unknown as Parameters<typeof syncUrlWithSessionKey>[0],
-              next,
-              true,
-            );
-            void loadChatHistory(state as unknown as ChatState);
-          }}
-        >
-          ${repeat(
-            sessionOptions,
-            (entry) => entry.key,
-            (entry) =>
-              html`<option value=${entry.key} title=${entry.key}>
-                ${entry.displayName ?? entry.key}
-              </option>`,
-          )}
-        </select>
-      </label>
       <button
         class="btn btn--sm btn--icon"
         ?disabled=${state.chatLoading || !state.connected}
@@ -394,88 +400,130 @@ function resolveSessionOptions(
   return options;
 }
 
-const THEME_ORDER: ThemeMode[] = ["system", "light", "dark"];
+type ThemeOption = { id: ThemeName; label: string; icon: string };
+const THEME_OPTIONS: ThemeOption[] = [
+  { id: "claw", label: "Claw", icon: "🦀" },
+  { id: "knot", label: "Knot", icon: "🪢" },
+  { id: "dash", label: "Dash", icon: "📊" },
+];
 
-export function renderThemeToggle(state: AppViewState) {
-  const index = Math.max(0, THEME_ORDER.indexOf(state.theme));
-  const applyTheme = (next: ThemeMode) => (event: MouseEvent) => {
-    const element = event.currentTarget as HTMLElement;
-    const context: ThemeTransitionContext = { element };
-    if (event.clientX || event.clientY) {
-      context.pointerClientX = event.clientX;
-      context.pointerClientY = event.clientY;
+type ThemeModeOption = { id: ThemeMode; label: string; short: string };
+const THEME_MODE_OPTIONS: ThemeModeOption[] = [
+  { id: "system", label: "System", short: "SYS" },
+  { id: "light", label: "Light", short: "LIGHT" },
+  { id: "dark", label: "Dark", short: "DARK" },
+];
+
+function currentThemeIcon(theme: ThemeName): string {
+  return THEME_OPTIONS.find((o) => o.id === theme)?.icon ?? "🎨";
+}
+
+export function renderTopbarThemeModeToggle(state: AppViewState) {
+  const modeIcon = (mode: ThemeMode) => {
+    if (mode === "system") {
+      return icons.monitor;
     }
-    state.setTheme(next, context);
+    if (mode === "light") {
+      return icons.sun;
+    }
+    return icons.moon;
+  };
+
+  const applyMode = (mode: ThemeMode, e: Event) => {
+    if (mode === state.themeMode) {
+      return;
+    }
+    state.setThemeMode(mode, { element: e.currentTarget as HTMLElement });
   };
 
   return html`
-    <div class="theme-toggle" style="--theme-index: ${index};">
-      <div class="theme-toggle__track" role="group" aria-label="Theme">
-        <span class="theme-toggle__indicator"></span>
-        <button
-          class="theme-toggle__button ${state.theme === "system" ? "active" : ""}"
-          @click=${applyTheme("system")}
-          aria-pressed=${state.theme === "system"}
-          aria-label="System theme"
-          title="System"
-        >
-          ${renderMonitorIcon()}
-        </button>
-        <button
-          class="theme-toggle__button ${state.theme === "light" ? "active" : ""}"
-          @click=${applyTheme("light")}
-          aria-pressed=${state.theme === "light"}
-          aria-label="Light theme"
-          title="Light"
-        >
-          ${renderSunIcon()}
-        </button>
-        <button
-          class="theme-toggle__button ${state.theme === "dark" ? "active" : ""}"
-          @click=${applyTheme("dark")}
-          aria-pressed=${state.theme === "dark"}
-          aria-label="Dark theme"
-          title="Dark"
-        >
-          ${renderMoonIcon()}
-        </button>
-      </div>
+    <div class="topbar-theme-mode" role="group" aria-label="Color mode">
+      ${THEME_MODE_OPTIONS.map(
+        (opt) => html`
+          <button
+            type="button"
+            class="topbar-theme-mode__btn ${opt.id === state.themeMode ? "topbar-theme-mode__btn--active" : ""}"
+            title=${opt.label}
+            aria-label="Color mode: ${opt.label}"
+            aria-pressed=${opt.id === state.themeMode}
+            @click=${(e: Event) => applyMode(opt.id, e)}
+          >
+            ${modeIcon(opt.id)}
+          </button>
+        `,
+      )}
     </div>
   `;
 }
 
-function renderSunIcon() {
-  return html`
-    <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="4"></circle>
-      <path d="M12 2v2"></path>
-      <path d="M12 20v2"></path>
-      <path d="m4.93 4.93 1.41 1.41"></path>
-      <path d="m17.66 17.66 1.41 1.41"></path>
-      <path d="M2 12h2"></path>
-      <path d="M20 12h2"></path>
-      <path d="m6.34 17.66-1.41 1.41"></path>
-      <path d="m19.07 4.93-1.41 1.41"></path>
-    </svg>
-  `;
-}
+export function renderThemeToggle(state: AppViewState) {
+  const setOpen = (orb: HTMLElement, nextOpen: boolean) => {
+    orb.classList.toggle("theme-orb--open", nextOpen);
+    const trigger = orb.querySelector<HTMLButtonElement>(".theme-orb__trigger");
+    const menu = orb.querySelector<HTMLElement>(".theme-orb__menu");
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+    }
+    if (menu) {
+      menu.setAttribute("aria-hidden", nextOpen ? "false" : "true");
+    }
+  };
 
-function renderMoonIcon() {
-  return html`
-    <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"
-      ></path>
-    </svg>
-  `;
-}
+  const toggleOpen = (e: Event) => {
+    const orb = (e.currentTarget as HTMLElement).closest<HTMLElement>(".theme-orb");
+    if (!orb) {
+      return;
+    }
+    const isOpen = orb.classList.contains("theme-orb--open");
+    if (isOpen) {
+      setOpen(orb, false);
+    } else {
+      setOpen(orb, true);
+      const close = (ev: MouseEvent) => {
+        if (!orb.contains(ev.target as Node)) {
+          setOpen(orb, false);
+          document.removeEventListener("click", close);
+        }
+      };
+      requestAnimationFrame(() => document.addEventListener("click", close));
+    }
+  };
 
-function renderMonitorIcon() {
+  const pick = (opt: ThemeOption, e: Event) => {
+    const orb = (e.currentTarget as HTMLElement).closest<HTMLElement>(".theme-orb");
+    if (orb) {
+      setOpen(orb, false);
+    }
+    if (opt.id !== state.theme) {
+      const context: ThemeTransitionContext = { element: orb ?? undefined };
+      state.setTheme(opt.id, context);
+    }
+  };
+
   return html`
-    <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <rect width="20" height="14" x="2" y="3" rx="2"></rect>
-      <line x1="8" x2="16" y1="21" y2="21"></line>
-      <line x1="12" x2="12" y1="17" y2="21"></line>
-    </svg>
+    <div class="theme-orb" aria-label="Theme">
+      <button
+        type="button"
+        class="theme-orb__trigger"
+        title="Theme"
+        aria-haspopup="menu"
+        aria-expanded="false"
+        @click=${toggleOpen}
+      >${currentThemeIcon(state.theme)}</button>
+      <div class="theme-orb__menu" role="menu" aria-hidden="true">
+        ${THEME_OPTIONS.map(
+          (opt) => html`
+            <button
+              type="button"
+              class="theme-orb__option ${opt.id === state.theme ? "theme-orb__option--active" : ""}"
+              title=${opt.label}
+              role="menuitemradio"
+              aria-checked=${opt.id === state.theme}
+              aria-label=${opt.label}
+              @click=${(e: Event) => pick(opt, e)}
+            >${opt.icon}</button>`,
+        )}
+      </div>
+    </div>
   `;
 }
