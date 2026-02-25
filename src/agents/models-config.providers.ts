@@ -679,7 +679,7 @@ function buildTogetherProvider(): ProviderConfig {
 
 function buildDeepseekProvider(): ProviderConfig {
   return {
-    baseUrl: "https://api.deepseek.com",
+    baseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
     api: "openai-completions",
     models: [
       {
