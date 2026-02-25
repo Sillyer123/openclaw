@@ -335,9 +335,15 @@ const runOnce = (entry, extraArgs = []) =>
   new Promise((resolve) => {
     const maxWorkers = maxWorkersForRun(entry.name);
     const reporterArgs = buildReporterArgs(entry, extraArgs);
+    // vmForks with a single worker has shown cross-file leakage in extension suites.
+    // Fall back to process forks when we intentionally clamp that lane to one worker.
+    const entryArgs =
+      entry.name === "extensions" && maxWorkers === 1 && entry.args.includes("--pool=vmForks")
+        ? entry.args.map((arg) => (arg === "--pool=vmForks" ? "--pool=forks" : arg))
+        : entry.args;
     const args = maxWorkers
       ? [
-          ...entry.args,
+          ...entryArgs,
           "--maxWorkers",
           String(maxWorkers),
           ...silentArgs,
@@ -345,7 +351,7 @@ const runOnce = (entry, extraArgs = []) =>
           ...windowsCiArgs,
           ...extraArgs,
         ]
-      : [...entry.args, ...silentArgs, ...reporterArgs, ...windowsCiArgs, ...extraArgs];
+      : [...entryArgs, ...silentArgs, ...reporterArgs, ...windowsCiArgs, ...extraArgs];
     const nodeOptions = process.env.NODE_OPTIONS ?? "";
     const nextNodeOptions = WARNING_SUPPRESSION_FLAGS.reduce(
       (acc, flag) => (acc.includes(flag) ? acc : `${acc} ${flag}`.trim()),
