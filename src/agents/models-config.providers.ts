@@ -677,6 +677,25 @@ function buildTogetherProvider(): ProviderConfig {
   };
 }
 
+function buildDeepseekProvider(): ProviderConfig {
+  return {
+    baseUrl: "https://api.deepseek.com",
+    api: "openai-completions",
+    models: [
+      {
+        id: "deepseek-chat",
+        name: "DeepSeek Chat (V3)",
+        reasoning: false,
+      },
+      {
+        id: "deepseek-reasoner",
+        name: "DeepSeek Reasoner (R1)",
+        reasoning: true,
+      },
+    ],
+  };
+}
+
 function buildOpenrouterProvider(): ProviderConfig {
   return {
     baseUrl: OPENROUTER_BASE_URL,
@@ -945,6 +964,16 @@ export async function resolveImplicitProviders(params: {
     providers.together = {
       ...buildTogetherProvider(),
       apiKey: togetherKey,
+    };
+  }
+
+  const deepseekKey =
+    resolveEnvApiKeyVarName("deepseek") ??
+    resolveApiKeyFromProfiles({ provider: "deepseek", store: authStore });
+  if (deepseekKey) {
+    providers.deepseek = {
+      ...buildDeepseekProvider(),
+      apiKey: deepseekKey,
     };
   }
 
